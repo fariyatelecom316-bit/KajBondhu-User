@@ -3,32 +3,76 @@ name: Build Android APK
 
 on:
   push:
-    branches:
-      - main
+    branches: [main, master]
   workflow_dispatch:
+  pull_request:
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK
+      - name: Find and extract Android project ZIP
+        shell: bash
+        run: |
+          ZIP_FILE=$(find . -maxdepth 1 -type f -name '*.zip' | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No project ZIP found in repository root."
+            exit 1
+          fi
+
+          rm -rf android-project
+          mkdir android-project
+          unzip -q "$ZIP_FILE" -d android-project
+
+          if [ -f "android-project/settings.gradle.kts" ]; then
+            echo "PROJECT_DIR=android-project" >> "$GITHUB_ENV"
+          else
+            PROJECT_DIR=$(find android-project -mindepth 1 -maxdepth 1 -type d | head -n 1)
+
+            if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/settings.gradle.kts" ]; then
+              echo "Could not find settings.gradle.kts after extracting the ZIP."
+              find android-project -maxdepth 2 -type f | sort | head -100
+              exit 1
+            fi
+
+            echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          fi
+
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Grant execute permission
-        run: chmod +x gradlew
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-      - name: Build APK
-        run: ./gradlew assembleDebug
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PAYMENT_BACKEND_URL: ${{ secrets.PAYMENT_BACKEND_URL }}
+        run: gradle assembleDebug --no-daemon
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: KajBondhu-APK
-          path: app/build/outputs/apk/debug/*.apk
+          name: KajBondhu-debug-APK
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
